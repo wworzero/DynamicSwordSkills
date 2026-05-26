@@ -1,3 +1,4 @@
+
 /**
     Copyright (C) <2017> <coolAlias>
 
@@ -43,19 +44,19 @@ import net.minecraftforge.fml.relauncher.SideOnly;
  * 
  * LEAPING BLOW
  * Activation: Jump while holding block, then attack (shield is not required)
- * Damage: Regular sword damage (without enchantment bonuses), +1 extra damage per skill level
+ * Damage: Sword damage + (level * 35% sword damage)
  * Effect: Adds Weakness I for (50 + (10 * level)) ticks
  * Range: Technique travels roughly 3 blocks + 1/2 block per level
  * Area: Approximately (0.5F + (0.25F * level)) radius in a straight line
  * Exhaustion: 2.0F minus 0.1F per level (1.5F at level 5)
  * 
- * Upon landing, all targets directly in front of the player take damage and
- * are weakened temporarily.
+ * Upon landing from a fall of at least 0.6 blocks, all targets directly in
+ * front of the player take damage and are weakened temporarily.
  * 
  */
 public class LeapingBlow extends SkillActive
 {
-	/** Activation window for pressing the attack key, set when player initially leaps */
+	/** Activation window for pressing the attack key, set when player initially leaps (modified: 15 ticks) */
 	private int ticksTilFail;
 
 	/** Set to true when activated; set to false upon landing */
@@ -82,7 +83,7 @@ public class LeapingBlow extends SkillActive
 	@Override
 	@SideOnly(Side.CLIENT)
 	public void addInformation(List<String> desc, EntityPlayer player) {
-		desc.add(getDamageDisplay(level, true));
+		desc.add(getDamageDisplay(level, true) + "%");
 		desc.add(getRangeDisplay(3.0F + 0.5F * level));
 		desc.add(getAreaDisplay(0.5F + 0.25F * level));
 		desc.add(getDurationDisplay(getPotionDuration(player), false));
@@ -112,9 +113,10 @@ public class LeapingBlow extends SkillActive
 		return false;
 	}
 
-	/** Returns player's base damage (which includes all attribute bonuses) plus 1.0F per level */
+	/** Damage formula: sword damage + (level * 0.35 * sword damage) */
 	private float getDamage(EntityPlayer player) {
-		return (float)(level + player.getEntityAttribute(SharedMonsterAttributes.ATTACK_DAMAGE).getAttributeValue());
+		float swordDamage = (float) player.getEntityAttribute(SharedMonsterAttributes.ATTACK_DAMAGE).getAttributeValue();
+		return swordDamage * (1.0F + level * 0.35F);
 	}
 
 	/** Duration of weakness effect; used for tooltip display only */
@@ -147,12 +149,12 @@ public class LeapingBlow extends SkillActive
 	public boolean keyPressed(Minecraft mc, KeyBinding key, EntityPlayer player) {
 		if (key == mc.gameSettings.keyBindJump) {
 			if (player.onGround && mc.gameSettings.keyBindUseItem.isKeyDown() && canUse(player)) {
-				ticksTilFail = 10;
+				ticksTilFail = 15; // modified: was 10, now 15 ticks activation window
 				return true;
 			}
 		} else if (canExecute(player) && activate(player)) {
 			KeyBinding.setKeyBindState(mc.gameSettings.keyBindUseItem.getKeyCode(), false);
-			DSSCombatEvents.setPlayerAttackTime(player); // prevent left-click spam
+			DSSCombatEvents.setPlayerAttackTime(player);
 			return true;
 		}
 		return false;
@@ -173,7 +175,6 @@ public class LeapingBlow extends SkillActive
 
 	@Override
 	public void onUpdate(EntityPlayer player) {
-		// Handle on client because onGround is always true on the server
 		if (player.getEntityWorld().isRemote) {
 			if (isActive() && (player.onGround || TargetUtils.isInLiquid(player))) {
 				deactivate(player);
@@ -198,14 +199,13 @@ public class LeapingBlow extends SkillActive
 	private void onFall(EntityPlayer player, float distance) {
 		if (isActive() && PlayerUtils.isSwordOrProvider(player.getHeldItemMainhand(), this)) {
 			if (player.getEntityWorld().isRemote) {
-				if (distance < 1.0F) {
+				if (distance < 0.6F) { // modified: was 1.0F, now 0.6F
 					DSSClientEvents.handlePlayerAttack(Minecraft.getMinecraft());
 				} else {
 					player.swingArm(EnumHand.MAIN_HAND);
 					player.resetCooldown();
 				}
-			} else if (distance >= 1.0F) {
-				// add exhaustion here, now that skill has truly activated:
+			} else if (distance >= 0.6F) { // modified: was 1.0F, now 0.6F
 				player.addExhaustion(getExhaustion());
 				EntityLeapingBlow entity = new EntityLeapingBlow(player.getEntityWorld(), player).setDamage(getDamage(player)).setLevel(level);
 				entity.shoot(player, player.rotationPitch, player.rotationYaw, 0.0F, entity.getVelocity(), 1.0F);
@@ -217,3 +217,7 @@ public class LeapingBlow extends SkillActive
 		onDeactivated(player.getEntityWorld(), player);
 	}
 }
+	
+
+
+			
