@@ -42,9 +42,9 @@ import net.minecraftforge.fml.relauncher.SideOnly;
  * DODGE
  * Description: Avoid damage by quickly dodging out of the way
  * Activation: Double-tap left or right to dodge in that direction
- * Exhaustion: 0.05F
- * Duration: (5 + level) ticks; this is the amount of time during which damage may be avoided
- * Special: Chance to avoid damage is 10% per level, plus a timing bonus of up to 20%
+ * Exhaustion: 0.1F (flat)
+ * Duration: 7 ticks (0.35 seconds) regardless of level
+ * Special: Chance to avoid damage is (level * 10%) + 15%, plus a timing bonus of up to (4% * level)
  * 
  */
 public class Dodge extends SkillActive
@@ -90,10 +90,6 @@ public class Dodge extends SkillActive
 		desc.add(getExhaustionDisplay(getExhaustion()));
 	}
 
-	/**
-	 * Prevents Dodge from being activated in quick succession, but does not prevent
-	 * other skills from being activated once Dodge has finished animating
-	 */
 	@Override
 	public boolean isActive() {
 		return (dodgeTimer > 0);
@@ -101,26 +97,25 @@ public class Dodge extends SkillActive
 
 	@Override
 	protected float getExhaustion() {
-		return 0.05F;
+		return 0.1F; // 固定消耗 0.1
 	}
 
-	/** Returns player's base chance to successfully evade an attack, including bonuses from buffs */
+	/** 基础闪避概率：等级 * 10% + 15%，不再受移动速度加成 */
 	private float getBaseDodgeChance(EntityPlayer player) {
-		float speedBonus = 2.0F * (float)(player.getAttributeMap().getAttributeInstance(SharedMonsterAttributes.MOVEMENT_SPEED).getAttributeValue() - Dash.BASE_MOVE);
-		return ((level * 0.1F) + speedBonus);
+		return (level * 0.1F + 0.15F);
 	}
 
-	/** Returns full chance to dodge an attack, including all bonuses */
+	/** 总闪避概率：基础概率 + 时间奖励 */
 	private float getDodgeChance(EntityPlayer player) {
 		return getBaseDodgeChance(player) + getTimeBonus();
 	}
 
-	/** Amount of time dodge will remain active */
+	/** 闪避持续时间：固定 7 刻 (0.35 秒) */
 	private int getDodgeTime() {
-		return (5 + level);
+		return 7;
 	}
 
-	/** Returns timing evasion bonus */
+	/** 时间奖励：早期闪避有额外加成，与剩余时间和等级相关 */
 	private float getTimeBonus() {
 		return ((dodgeTimer + level - 5) * 0.02F);
 	}
@@ -251,7 +246,7 @@ public class Dodge extends SkillActive
 
 	@Override
 	public boolean onBeingAttacked(EntityPlayer player, DamageSource source) {
-		if (dodgeTimer > level) { // still able to dodge (used to use isActive(), but changed for animating)
+		if (dodgeTimer > level) {
 			Entity attacker = source.getTrueSource();
 			if (attacker != null) {
 				return (attacker == entityDodged || dodgeAttack(player, attacker));
@@ -272,3 +267,9 @@ public class Dodge extends SkillActive
 		return false;
 	}
 }
+
+	
+
+
+
+			
