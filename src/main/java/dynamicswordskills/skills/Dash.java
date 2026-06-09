@@ -48,121 +48,296 @@ import net.minecraftforge.fml.relauncher.Side;
 import net.minecraftforge.fml.relauncher.SideOnly;
 import swordskillsapi.api.item.IDashItem;
 
+/**
+ * 
+ * The player charges into the target, inflicting damage and knocking the target back.
+ * 
+ * Activation: Press the attack key while moving forward and blocking
+ * Range: 3 blocks plus 1 block per level
+ * Damage: 200 * level + level * (attack damage * 0.8)
+ * Knockback Strength: 0.4F per level plus an additional 0.15F per block traveled beyond the minimum (capped at 3.0F)
+ * Exhaustion: 16.0 (fixed)
+ * Special: Must be at least 2 blocks away from target when skill is activated to
+ * 			inflict damage, minus 0.2F per level (down to 1 block at level 5)
+ * Special: Effects that increase player speed increase the effective range, damage, and knockback.
+ * 
+ */
 public class Dash extends SkillActive
 {
-    public static final double BASE_MOVE = 0.10000000149011612D;
-    private boolean isActive = false;
-    private int activeTime;
-    private Vec3d trajectory;
-    private Vec3d initialPosition;
-    private Entity target;
-    private int impactTime;
+	/** Player's base movement speed */
+	public static final double BASE_MOVE = 0.10000000149011612D;
 
-    public Dash(String translationKey) { super(translationKey); }
-    private Dash(Dash skill) { super(skill); }
-    @Override public Dash newInstance() { return new Dash(this); }
+	/** True when Slam is used and while the player is in motion towards the target */
+	private boolean isActive = false;
 
-    @Override @SideOnly(Side.CLIENT) public void addInformation(List<String> desc, EntityPlayer player) {
-        desc.add(new TextComponentTranslation(getTranslationKey() + ".info.damage").getUnformattedText());
-        desc.add(getRangeDisplay(getRange()));
-        desc.add(getExhaustionDisplay(getExhaustion()));
-    }
-    @Override public boolean isActive() { return isActive || impactTime > 0; }
-    protected int getMaxActiveTime() { return 14 + (2 * level); }
-    private int getBlockCooldown() { return (50 - (3 * level)); }
-    @Override protected float getExhaustion() { return 12.0F; }
-    private float getKnockback() { return 0.4F * level; }
+	/** Number of ticks since activation */
+	private int activeTime;
 
-    // 最大冲刺距离：6.0 + level*2
-    private double getRange() { return (6.0D + 2 * level); }
-    private double getMinDistance() { return 2.0D - (0.2D * level); }
+	/** Trajectory based on player's last look vector while on the ground */
+	private Vec3d trajectory;
 
-    @Override public boolean canUse(EntityPlayer player) {
-        boolean flag = PlayerUtils.isBlocking(player);
-        for (EnumHand hand : EnumHand.values()) { if (canItemDash(player, hand)) { flag = true; break; } }
-        return (flag && super.canUse(player) && !isActive());
-    }
-    private boolean canItemDash(EntityPlayer player, EnumHand hand) {
-        ItemStack stack = player.getHeldItem(hand);
-        if (stack.getItem() instanceof IDashItem) return ((IDashItem) stack.getItem()).canDash(stack, player, hand);
-        return false;
-    }
-    @Override @SideOnly(Side.CLIENT) public boolean canExecute(EntityPlayer player) {
-        return player.onGround && canUse(player) && Minecraft.getMinecraft().gameSettings.keyBindForward.isKeyDown();
-    }
-    @Override @SideOnly(Side.CLIENT) public boolean isKeyListener(Minecraft mc, KeyBinding key, boolean isLockedOn) {
-        if (Config.requiresLockOn() && !isLockedOn) return false;
-        return key == mc.gameSettings.keyBindAttack;
-    }
-    @Override @SideOnly(Side.CLIENT) public boolean keyPressed(Minecraft mc, KeyBinding key, EntityPlayer player) {
-        return canExecute(player) && activate(player);
-    }
-    @Override protected boolean onActivated(World world, EntityPlayer player) {
-        isActive = true; activeTime = 0; player.setSprinting(true);
-        trajectory = player.getLookVec(); initialPosition = new Vec3d(player.posX, player.posY, player.posZ);
-        return isActive();
-    }
-    @Override protected void onDeactivated(World world, EntityPlayer player) { initialPosition = null; impactTime = 0; setNotDashing(player); }
-    @Override public void onUpdate(EntityPlayer player) {
-        if (impactTime > 0) { --impactTime; if (impactTime == 0) target = null; }
-        if (isActive) {
-            player.setSprinting(true);
-            if (!PlayerUtils.isBlocking(player)) { if (!player.getEntityWorld().isRemote) deactivate(player); }
-            else if (player.getEntityWorld().isRemote) {
-                if (trajectory != null) {
-                    double bonus = 1.0D + (0.15D * level);
-                    double speed = bonus * player.getAttributeMap().getAttributeInstance(SharedMonsterAttributes.MOVEMENT_SPEED).getAttributeValue();
-                    if (player.isInWater() || player.isInLava()) speed *= 0.15D;
-                    if (player.onGround) trajectory = player.getLookVec();
-                    player.addVelocity(trajectory.x * speed, -0.02D, trajectory.z * speed);
-                }
-                RayTraceResult result = TargetUtils.checkForImpact(player.getEntityWorld(), player, player, 0.5D, false);
-                if (result != null || player.collidedHorizontally) {
-                    PacketDispatcher.sendToServer(new DashImpactPacket(player, result));
-                    player.resetCooldown(); DSSPlayerInfo.get(player).setUseItemCooldown(getBlockCooldown());
-                    KeyBinding.setKeyBindState(Minecraft.getMinecraft().gameSettings.keyBindUseItem.getKeyCode(), false);
-                    impactTime = 5; if (result != null && result.typeOfHit == RayTraceResult.Type.ENTITY) target = result.entityHit;
-                    double d = (player.onGround ? 2.0D : 0.5D); double dy = (player.onGround ? 0.3D : -0.15D);
-                    player.setVelocity(-player.motionX * d, dy, -player.motionZ * d); setNotDashing(player);
-                } else if (initialPosition == null || player.getDistance(initialPosition.x, initialPosition.y, initialPosition.z) > getRange()) {
-                    player.addVelocity(-player.motionX * 0.5D, -0.02D, -player.motionZ * 0.5D); deactivate(player);
-                } else if (!Minecraft.getMinecraft().gameSettings.keyBindForward.isKeyDown()) { deactivate(player); }
-            }
-        }
-        if (isActive) { ++activeTime; if (activeTime > getMaxActiveTime()) { if (!player.getEntityWorld().isRemote) deactivate(player); } }
-    }
-    public void onImpact(World world, EntityPlayer player, RayTraceResult result) {
-        if (result != null && result.typeOfHit == RayTraceResult.Type.ENTITY) {
-            target = result.entityHit;
-            double distance = target.getDistance(initialPosition.x, initialPosition.y, initialPosition.z);
-            double bbMod = (target.width / 2.0F) + (player.width / 2.0F);
-            double speed = player.getAttributeMap().getAttributeInstance(SharedMonsterAttributes.MOVEMENT_SPEED).getAttributeValue();
-            double sf = (1.0D + (speed - BASE_MOVE)); if (player.isInWater() || player.isInLava()) sf *= 0.3D;
-            if (speed > 0.075D && (distance - bbMod) > getMinDistance() && distance < (getRange() + 1.0D) && player.getDistanceSq(target) < 6.0D) {
-                double attackDamage = player.getAttributeMap().getAttributeInstance(SharedMonsterAttributes.ATTACK_DAMAGE).getAttributeValue();
-                // 伤害公式：200*level + level * (攻击力 * 0.8)
-                float dmg = (float)(200.0F * level + level * (attackDamage * 0.6F));
-                impactTime = 5;
-                target.attackEntityFrom(DamageUtils.causeIndirectComboDamage(player, player), dmg);
-                if (target instanceof EntityLivingBase) {
-                    float db = 0.15F * (float)(distance - getMinDistance());
-                    float k = (float)sf * Math.min(db + getKnockback(), 3.0F);
-                    TargetUtils.knockTargetBack((EntityLivingBase) target, player, 0.5F * k);
-                }
-                if (target instanceof EntityPlayerMP && !player.getEntityWorld().isRemote) ((EntityPlayerMP) target).connection.sendPacket(new SPacketEntityVelocity(target));
-            }
-        }
-        DSSPlayerInfo.get(player).setUseItemCooldown(getBlockCooldown());
-        PlayerUtils.playSoundAtEntity(player.getEntityWorld(), player, ModSounds.SLAM, SoundCategory.PLAYERS, 0.4F, 0.5F);
-        setNotDashing(player);
-    }
-    @Override @SideOnly(Side.CLIENT) public boolean isAnimating() { return isActive; }
-    @Override @SideOnly(Side.CLIENT) public boolean onRenderTick(EntityPlayer player, float partialTickTime) { player.setSprinting(true); return false; }
-    @Override public boolean onBeingAttacked(EntityPlayer player, DamageSource source) {
-        if (impactTime > 0 && source.getTrueSource() == target) return true;
-        else if (source.damageType.equals("mob") && source.getTrueSource() != null && player.getDistanceSq(source.getTrueSource()) < 6.0D) return true;
-        return false;
-    }
-    private void setNotDashing(EntityPlayer player) { isActive = false; player.setSprinting(false); trajectory = null; if (!isActive()) target = null; }
+	/** Player's starting position is used to determine actual distance traveled upon impact */
+	private Vec3d initialPosition;
+
+	/** Target acquired from ILockOnTarget skill; set to the entity hit upon impact */
+	private Entity target;
+
+	/** Impact timer used to make player immune to damage from struck target only, vs. setting hurtResistantTime */
+	private int impactTime;
+
+	public Dash(String translationKey) {
+		super(translationKey);
+	}
+
+	private Dash(Dash skill) {
+		super(skill);
+	}
+
+	@Override
+	public Dash newInstance() {
+		return new Dash(this);
+	}
+
+	@Override
+	@SideOnly(Side.CLIENT)
+	public void addInformation(List<String> desc, EntityPlayer player) {
+		desc.add(getDamageDisplay(0, false) + " (基于攻击力的动态伤害)");
+		desc.add(new TextComponentTranslation(getTranslationKey() + ".info.knockback", String.format("%.1f", getKnockback())).getUnformattedText());
+		desc.add(getRangeDisplay(getRange()));
+		desc.add(new TextComponentTranslation(getTranslationKey() + ".info.min_range", String.format("%.1f", getMinDistance())).getUnformattedText());
+		desc.add(getExhaustionDisplay(getExhaustion()));
+	}
+
+	@Override
+	public boolean isActive() {
+		return isActive || impactTime > 0;
+	}
+
+	/** Maximum active time in case player is unable to move an appropriate amount of distance */
+	protected int getMaxActiveTime() {
+		return 14 + (2 * level);
+	}
+
+	/** Number of ticks the player will not be able to block or use an item after impact */
+	private int getBlockCooldown() {
+		return (30 - (2 * level));
+	}
+
+	// 消耗固定为 16
+	@Override
+	protected float getExhaustion() {
+		return 16.0F;
+	}
+
+	/** 伤害计算已移至 onImpact，此方法保留仅用于兼容 */
+	private int getDamage() {
+		return 0;
+	}
+
+	/** Returns base knockback strength, not accounting for distance traveled */
+	private float getKnockback() {
+		return 0.4F * level;
+	}
+
+	/** Range increases by 1 block per level */
+	private double getRange() {
+		return (3.0D + level);
+	}
+
+	/** Minimum distance the player must cover before the dash is effective */
+	private double getMinDistance() {
+		return 2.0D - (0.2D * level);
+	}
+
+	@Override
+	public boolean canUse(EntityPlayer player) {
+		boolean flag = PlayerUtils.isBlocking(player);
+		for (EnumHand hand : EnumHand.values()) {
+			if (canItemDash(player, hand)) {
+				flag = true;
+				break;
+			}
+		}
+		return (flag && super.canUse(player) && !isActive());
+	}
+
+	/**
+	 * Returns true if the item held in the given hand is an {@link IDashItem}
+	 * and {@link IDashItem#canDash(ItemStack, EntityPlayer, EnumHand) IDashItem#canDash} returns true.
+	 */
+	private boolean canItemDash(EntityPlayer player, EnumHand hand) {
+		ItemStack stack = player.getHeldItem(hand);
+		if (stack.getItem() instanceof IDashItem) {
+			return ((IDashItem) stack.getItem()).canDash(stack, player, hand);
+		}
+		return false;
+	}
+
+	@Override
+	@SideOnly(Side.CLIENT)
+	public boolean canExecute(EntityPlayer player) {
+		return player.onGround && canUse(player) && Minecraft.getMinecraft().gameSettings.keyBindForward.isKeyDown();
+	}
+
+	@Override
+	@SideOnly(Side.CLIENT)
+	public boolean isKeyListener(Minecraft mc, KeyBinding key, boolean isLockedOn) {
+		if (Config.requiresLockOn() && !isLockedOn) {
+			return false;
+		}
+		return key == mc.gameSettings.keyBindAttack;
+	}
+
+	@Override
+	@SideOnly(Side.CLIENT)
+	public boolean keyPressed(Minecraft mc, KeyBinding key, EntityPlayer player) {
+		return canExecute(player) && activate(player);
+	}
+
+	@Override
+	protected boolean onActivated(World world, EntityPlayer player) {
+		isActive = true;
+		activeTime = 0;
+		player.setSprinting(true);
+		trajectory = player.getLookVec();
+		initialPosition = new Vec3d(player.posX, player.posY, player.posZ);
+		return isActive();
+	}
+
+	@Override
+	protected void onDeactivated(World world, EntityPlayer player) {
+		initialPosition = null;
+		impactTime = 0;
+		setNotDashing(player);
+	}
+
+	@Override
+	public void onUpdate(EntityPlayer player) {
+		if (impactTime > 0) {
+			--impactTime;
+			if (impactTime == 0) {
+				target = null;
+			}
+		}
+		if (isActive) {
+			player.setSprinting(true);
+			if (!PlayerUtils.isBlocking(player)) {
+				if (!player.getEntityWorld().isRemote) {
+					deactivate(player);
+				}
+			} else if (player.getEntityWorld().isRemote) {
+				if (trajectory != null) {
+					double bonus = 1.0D + (0.1D * level);
+					double speed = bonus * player.getAttributeMap().getAttributeInstance(SharedMonsterAttributes.MOVEMENT_SPEED).getAttributeValue();
+					if (player.isInWater() || player.isInLava()) {
+						speed *= 0.15D;
+					}
+					if (player.onGround) { 
+						trajectory = player.getLookVec();
+					}
+					player.addVelocity(trajectory.x * speed, -0.02D, trajectory.z * speed);
+				}
+				RayTraceResult result = TargetUtils.checkForImpact(player.getEntityWorld(), player, player, 0.5D, false);
+				if (result != null || player.collidedHorizontally) {
+					PacketDispatcher.sendToServer(new DashImpactPacket(player, result));
+					player.resetCooldown();
+					DSSPlayerInfo.get(player).setUseItemCooldown(getBlockCooldown());
+					KeyBinding.setKeyBindState(Minecraft.getMinecraft().gameSettings.keyBindUseItem.getKeyCode(), false);
+					impactTime = 5;
+					if (result != null && result.typeOfHit == RayTraceResult.Type.ENTITY) {
+						target = result.entityHit;
+					}
+					double d = (player.onGround ? 2.0D : 0.5D);
+					double dy = (player.onGround ? 0.3D : -0.15D);
+					player.setVelocity(-player.motionX * d, dy, -player.motionZ * d);
+					setNotDashing(player);
+				} else if (initialPosition == null || player.getDistance(initialPosition.x, initialPosition.y, initialPosition.z) > getRange()) {
+					player.addVelocity(-player.motionX * 0.5D, -0.02D, -player.motionZ * 0.5D);
+					deactivate(player);
+				} else if (!Minecraft.getMinecraft().gameSettings.keyBindForward.isKeyDown()) {
+					deactivate(player);
+				}
+			}
+		}
+		if (isActive) {
+			++activeTime;
+			if (activeTime > getMaxActiveTime()) {
+				if (!player.getEntityWorld().isRemote) {
+					deactivate(player);
+				}
+			}
+		}
+	}
+
+	/**
+	 * Called on the server from {@link DashImpactPacket} to process the impact data from the client
+	 */
+	public void onImpact(World world, EntityPlayer player, RayTraceResult result) {
+		if (result != null && result.typeOfHit == RayTraceResult.Type.ENTITY) {
+			target = result.entityHit;
+			double distance = target.getDistance(initialPosition.x, initialPosition.y, initialPosition.z);
+			double bbMod = (target.width / 2.0F) + (player.width / 2.0F);
+			double speed = player.getAttributeMap().getAttributeInstance(SharedMonsterAttributes.MOVEMENT_SPEED).getAttributeValue();
+			double sf = (1.0D + (speed - BASE_MOVE));
+			if (player.isInWater() || player.isInLava()) {
+				sf *= 0.3D;
+			}
+			if (speed > 0.075D && (distance - bbMod) > getMinDistance() && distance < (getRange() + 1.0D) && player.getDistanceSq(target) < 6.0D) {
+				// 获取玩家攻击力
+				double attackDamage = player.getAttributeMap().getAttributeInstance(SharedMonsterAttributes.ATTACK_DAMAGE).getAttributeValue();
+				// 新伤害公式：200 * level + level * (attackDamage * 0.8)
+				float dmg = (float)(200.0F * level + level * (attackDamage * 0.8F));
+				impactTime = 5;
+				// 使用间接剑技伤害源，以便 NPC 脚本识别
+				target.attackEntityFrom(DamageUtils.causeIndirectComboDamage(player, player), dmg);
+				if (target instanceof EntityLivingBase) {
+					float db = 0.15F * (float)(distance - getMinDistance());
+					float k = (float)sf * Math.min(db + getKnockback(), 3.0F);
+					TargetUtils.knockTargetBack((EntityLivingBase) target, player, 0.5F * k);
+				}
+				if (target instanceof EntityPlayerMP && !player.getEntityWorld().isRemote) {
+					((EntityPlayerMP) target).connection.sendPacket(new SPacketEntityVelocity(target));
+				}
+			}
+		}
+		DSSPlayerInfo.get(player).setUseItemCooldown(getBlockCooldown());
+		PlayerUtils.playSoundAtEntity(player.getEntityWorld(), player, ModSounds.SLAM, SoundCategory.PLAYERS, 0.4F, 0.5F);
+		setNotDashing(player);
+	}
+
+	@Override
+	@SideOnly(Side.CLIENT)
+	public boolean isAnimating() {
+		return isActive;
+	}
+
+	@Override
+	@SideOnly(Side.CLIENT)
+	public boolean onRenderTick(EntityPlayer player, float partialTickTime) {
+		player.setSprinting(true);
+		return false;
+	}
+
+	@Override
+	public boolean onBeingAttacked(EntityPlayer player, DamageSource source) {
+		if (impactTime > 0 && source.getTrueSource() == target) {
+			return true;
+		} else if (source.damageType.equals("mob") && source.getTrueSource() != null && player.getDistanceSq(source.getTrueSource()) < 6.0D) {
+			return true;
+		}
+		return false;
+	}
+
+	private void setNotDashing(EntityPlayer player) {
+		isActive = false;
+		player.setSprinting(false);
+		trajectory = null;
+		if (!isActive()) {
+			target = null;
+		}
+	}
 }
+
+
+        
         
